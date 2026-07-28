@@ -1,1 +1,3 @@
-# placeholder for terraform main configuration
+# placeholder for terraform main configuration...
+
+## Hello! It looks like you've provided a snippet from your Terraform configuration files. How can I assist you with this? Are you looking for help with writing Terraform code, understanding the configuration, or something else?
