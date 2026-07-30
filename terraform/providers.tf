@@ -11,12 +11,7 @@ terraform {
       version = "~> 3.0"
     }
   }
-
-  backend "s3" {
-    bucket = "vntechies-bucket"
-    key    = "terraform/terraform.tfstate"
-    region = "ap-southeast-1"
-  }
+backend "s3" {  }
 }
 
 provider "aws" {

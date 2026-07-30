@@ -5,7 +5,7 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "demo-vpc"
+    Name = "${var.env}-demo-vpc"
   }
 }
 
@@ -16,7 +16,7 @@ resource "aws_subnet" "public-subnet-A" {
   availability_zone = "ap-southeast-1a"
 
   tags = {
-    Name = "Public Subnet A"
+    Name = "${var.env}-public-subnet-A"
   }
 }
 
@@ -26,7 +26,7 @@ resource "aws_subnet" "public-subnet-B" {
   availability_zone = "ap-southeast-1b"
 
   tags = {
-    Name = "Public Subnet B"
+    Name = "${var.env}-public-subnet-B"
   }
 }
 
@@ -36,7 +36,7 @@ resource "aws_subnet" "private-subnet-A" {
   availability_zone = "ap-southeast-1a"
 
   tags = {
-    Name = "Private Subnet A"
+    Name = "${var.env}-private-subnet-A"
   }
 }
 
@@ -46,7 +46,7 @@ resource "aws_subnet" "private-subnet-B" {
   availability_zone = "ap-southeast-1b"
 
   tags = {
-    Name = "Private Subnet B"
+    Name = "${var.env}-private-subnet-B"
   }
 }
 
@@ -54,7 +54,7 @@ resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "demo-igw"
+    Name = "${var.env}-igw"
   }
 }
 
@@ -62,7 +62,7 @@ resource "aws_eip" "nat" {
   domain = "vpc"
 
   tags = {
-    Name = "demo-nat-eip"
+    Name = "${var.env}-nat-eip"
   }
 }
 
@@ -71,7 +71,7 @@ resource "aws_nat_gateway" "nat" {
   subnet_id     = aws_subnet.public-subnet-A.id
 
   tags = {
-    Name = "demo-nat-gw"
+    Name = "${var.env}-nat-gw"
   }
 
   depends_on = [aws_internet_gateway.gw]
@@ -86,7 +86,7 @@ resource "aws_route_table" "public-route-table" {
   }
 
   tags = {
-    Name = "public-route-table"
+    Name = "${var.env}-public-route-table"
   }
 }
 
@@ -99,7 +99,7 @@ resource "aws_route_table" "private-route-table" {
   }
 
   tags = {
-    Name = "private-route-table"
+    Name = "${var.env}-private-route-table"
   }
 }
 
