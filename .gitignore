@@ -1,0 +1,29 @@
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files — contain sensitive data, use remote state instead
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude sensitive variable files
+*.tfvars
+*.tfvars.json
+
+# Ignore override files — used for local dev overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform lock file — commit this to pin provider versions
+# .terraform.lock.hcl
+
+# Terraform plan output — may contain secrets
+*.tfplan
+
+# macOS
+.DS_Store
