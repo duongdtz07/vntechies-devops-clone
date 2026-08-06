@@ -5,7 +5,7 @@ data "aws_route53_zone" "main" {
 
 resource "aws_route53_record" "app" {
   zone_id = data.aws_route53_zone.main.zone_id
-  name    = "alb.cloudacad.help"
+  name    = "${var.env}alb.cloudacad.help"
   type    = "A"
 
   alias {
