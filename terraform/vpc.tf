@@ -1,7 +1,7 @@
 resource "aws_vpc" "main" {
-  cidr_block       = "10.0.0.0/22"
-  instance_tenancy = "default"
-  enable_dns_support = true
+  cidr_block           = "10.0.0.0/22"
+  instance_tenancy     = "default"
+  enable_dns_support   = true
   enable_dns_hostnames = true
 
   tags = {
@@ -11,8 +11,8 @@ resource "aws_vpc" "main" {
 
 
 resource "aws_subnet" "public-subnet-A" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.0.0/24"
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.0.0/24"
   availability_zone = "ap-southeast-1a"
 
   tags = {
@@ -21,8 +21,8 @@ resource "aws_subnet" "public-subnet-A" {
 }
 
 resource "aws_subnet" "public-subnet-B" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.1.0/24"
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.1.0/24"
   availability_zone = "ap-southeast-1b"
 
   tags = {
@@ -31,8 +31,8 @@ resource "aws_subnet" "public-subnet-B" {
 }
 
 resource "aws_subnet" "private-subnet-A" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.2.0/24"
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.2.0/24"
   availability_zone = "ap-southeast-1a"
 
   tags = {
@@ -41,8 +41,8 @@ resource "aws_subnet" "private-subnet-A" {
 }
 
 resource "aws_subnet" "private-subnet-B" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.3.0/24"
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.3.0/24"
   availability_zone = "ap-southeast-1b"
 
   tags = {

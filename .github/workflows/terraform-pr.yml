@@ -1,4 +1,4 @@
-name: Terraform PR
+name: Terraform PR Validation
 
 # Runs on every PR targeting main.
 # Validates code quality and posts a plan preview as a PR comment.
@@ -8,16 +8,16 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-*.yml'
+      - "terraform/**"
+      - ".github/workflows/terraform-*.yml"
 
 permissions:
   contents: read
-  pull-requests: write  # required to post / update PR comments
+  pull-requests: write # required to post / update PR comments
 
 env:
-  TF_VERSION: '1.5.0'
-  AWS_REGION: 'ap-southeast-1'
+  TF_VERSION: "1.5.0"
+  AWS_REGION: "ap-southeast-1"
 
 jobs:
   # ──────────────────────────────────────────────────────────────
@@ -60,7 +60,6 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_REGION: ${{ env.AWS_REGION }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +68,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Init
-        run: terraform init -backend-config=environments/dev/dev.tfbackend -reconfigure
+        run: terraform init -backend-config=environments/dev/dev.tfbackend
 
       - name: Plan
         id: plan
@@ -80,7 +79,7 @@ jobs:
             -no-color \
             -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-        continue-on-error: true  # let pr-comment job run even if plan fails
+        continue-on-error: true # let pr-comment job run even if plan fails
 
       - name: Upload plan output
         uses: actions/upload-artifact@v4

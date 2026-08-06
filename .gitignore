@@ -11,7 +11,6 @@ crash.log
 crash.*.log
 
 # Exclude sensitive variable files
-*.tfvars
 *.tfvars.json
 
 # Ignore override files — used for local dev overrides

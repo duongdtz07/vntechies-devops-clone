@@ -1,16 +1,16 @@
 variable "env" {
-    type = string
-    default = "dev"
+  type    = string
+  default = "dev"
 }
 
 variable "instance_type" {
-    default = "t3.micro"
-    type = string
+  default = "t3.micro"
+  type    = string
 }
 
 variable "ami" {
-    type = string
-    default = "ami-01b70d44184a858e8"
+  type    = string
+  default = "ami-01b70d44184a858e8"
 }
 
 variable "asg_min_size" {
