@@ -5,6 +5,7 @@
 *.tfstate
 *.tfstate.*
 
+
 # Crash log files
 crash.log
 crash.*.log
@@ -18,7 +19,7 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
-
+terraform/app-install.sh
 # Terraform lock file — commit this to pin provider versions
 # .terraform.lock.hcl
 
