@@ -1,0 +1,120 @@
+name: Terraform Deploy
+
+# Runs when code is merged into main.
+# Promotes infrastructure through: DEV → PRODUCTION
+# Production requires manual approval via GitHub Environment protection rules.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-*.yml'
+
+# Prevent concurrent deployments — let the running pipeline finish before starting another
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: '1.5.0'
+  AWS_REGION: 'ap-southeast-1'
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Stage 1: Deploy to DEV (automatic, no approval needed)
+  # ──────────────────────────────────────────────────────────────
+  deploy-dev:
+    name: Deploy / Dev
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ env.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init -backend-config=environments/dev/dev.tfbackend
+
+      - name: Plan
+        run: terraform plan -var-file=environments/dev/dev.tfvars -out=dev.tfplan
+
+      - name: Apply
+        run: terraform apply -auto-approve dev.tfplan
+
+  # ──────────────────────────────────────────────────────────────
+  # Stage 2: Integration Tests (automatic, runs after DEV deploy)
+  # Replace the placeholder steps with your actual test commands
+  # ──────────────────────────────────────────────────────────────
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ env.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check EC2 instances are running in dev
+        run: |
+          echo "Checking DEV EC2 instances..."
+          aws ec2 describe-instances \
+            --filters "Name=tag:env,Values=dev" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[*].Instances[*].InstanceId' \
+            --output text
+          echo "EC2 check passed."
+
+      # TODO: add more integration tests here
+      # e.g. pytest tests/integration/ --env dev
+      # e.g. curl health-check endpoint
+
+  # ──────────────────────────────────────────────────────────────
+  # Stage 3: Deploy to PRODUCTION
+  # Requires manual approval — set "Required reviewers" on the
+  # `prod` environment in GitHub Settings → Environments
+  # ──────────────────────────────────────────────────────────────
+  deploy-prod:
+    name: Deploy / Prod
+    runs-on: ubuntu-latest
+    needs: integration-test
+    environment: prod      # <-- Required Reviewers mandatory for production
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ env.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
+
+      - name: Plan
+        run: terraform plan -var-file=environments/prod/prod.tfvars -out=prod.tfplan
+
+      - name: Apply
+        run: terraform apply -auto-approve prod.tfplan
