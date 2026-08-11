@@ -31,9 +31,9 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(local.common_tags, {
     Name = "${var.env}-alb-sg"
-  }
+  })
 }
 
 resource "aws_security_group" "asg" {
@@ -56,9 +56,9 @@ resource "aws_security_group" "asg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
+  tags = merge(local.common_tags, {
     Name = "${var.env}-asg-sg"
-  }
+  })
 }
 
 resource "aws_lb" "app" {
@@ -68,11 +68,9 @@ resource "aws_lb" "app" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = [aws_subnet.public-subnet-A.id, aws_subnet.public-subnet-B.id]
 
-  tags = {
-    Name        = "${var.env}-app-alb"
-    Environment = var.env
-    managed_by  = "terraform"
-  }
+  tags = merge(local.common_tags, {
+    Name = "${var.env}-app-alb"
+  })
 }
 
 resource "aws_lb_target_group" "app" {
@@ -88,9 +86,9 @@ resource "aws_lb_target_group" "app" {
     interval            = 30
   }
 
-  tags = {
+  tags = merge(local.common_tags, {
     Name = "${var.env}-app-tg"
-  }
+  })
 }
 
 resource "aws_lb_listener" "http" {
@@ -130,11 +128,9 @@ resource "aws_launch_template" "app" {
 
   tag_specifications {
     resource_type = "instance"
-    tags = {
-      Name        = "${var.env}-app-asg-instance"
-      Environment = var.env
-      managed_by  = "terraform"
-    }
+    tags = merge(local.common_tags, {
+      Name = "${var.env}-app-asg-instance"
+    })
   }
 }
 
@@ -151,16 +147,16 @@ resource "aws_autoscaling_group" "app" {
     version = "$Latest"
   }
 
-  tag {
-    key                 = "Environment"
-    value               = var.env
-    propagate_at_launch = true
-  }
-
-  tag {
-    key                 = "managed_by"
-    value               = "terraform"
-    propagate_at_launch = true
+  # Propagate all common tags (env, managed_by, release_version) plus Name to every EC2 instance
+  dynamic "tag" {
+    for_each = merge(local.common_tags, {
+      Name = "${var.env}-app-asg-instance"
+    })
+    content {
+      key                 = tag.key
+      value               = tag.value
+      propagate_at_launch = true
+    }
   }
 }
 

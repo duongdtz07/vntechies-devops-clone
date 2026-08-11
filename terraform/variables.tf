@@ -3,6 +3,12 @@ variable "env" {
   default = "dev"
 }
 
+variable "release_version" {
+  type        = string
+  default     = "untagged"
+  description = "Git release tag applied to all resources (e.g. v1.2.3). Set automatically by CI; defaults to 'untagged' for local runs."
+}
+
 variable "instance_type" {
   default = "t3.micro"
   type    = string

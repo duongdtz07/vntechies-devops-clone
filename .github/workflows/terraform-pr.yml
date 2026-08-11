@@ -1,8 +1,13 @@
 name: Terraform PR Validation
 
 # Runs on every PR targeting main.
-# Validates code quality and posts a plan preview as a PR comment.
+# Validates code quality and posts a plan preview for BOTH environments as a PR comment.
 # Nothing is applied — this workflow is read-only.
+#
+# GitHub Environments required:
+#   dev       — existing environment with AWS credentials
+#   prod-plan — environment WITHOUT required reviewers, same prod AWS credentials
+#               (keeps the reviewer gate on apply only, not on PR planning)
 
 on:
   pull_request:
@@ -22,7 +27,7 @@ env:
 jobs:
   # ──────────────────────────────────────────────────────────────
   # Job 1: Validate — format check + terraform validate
-  # Runs in parallel with plan-dev (no dependency between them)
+  # Runs in parallel with plan jobs (no dependency between them)
   # ──────────────────────────────────────────────────────────────
   validate:
     name: Validate
@@ -48,7 +53,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # Job 2: Plan Dev — show what would change in dev if merged
-  # Runs in parallel with validate
+  # Runs in parallel with validate and plan-prod
   # ──────────────────────────────────────────────────────────────
   plan-dev:
     name: Plan / Dev
@@ -72,37 +77,87 @@ jobs:
 
       - name: Plan
         id: plan
-        # Write output to workspace root so the artifact path is simple
         run: |
           terraform plan \
             -var-file=environments/dev/dev.tfvars \
             -no-color \
-            -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/plan_output.txt
+            -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/dev_plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-        continue-on-error: true # let pr-comment job run even if plan fails
+        continue-on-error: true
 
       - name: Upload plan output
         uses: actions/upload-artifact@v4
         with:
           name: dev-plan-output-${{ github.run_id }}
-          path: plan_output.txt
+          path: dev_plan_output.txt
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Job 3: PR Comment — post combined validate + plan result
-  # Waits for both jobs above; runs even if they fail
+  # Job 3: Plan Prod — show what would change in prod if merged
+  # Runs in parallel with validate and plan-dev
+  #
+  # Requires a `prod-plan` GitHub Environment with prod AWS
+  # credentials but NO required reviewers (reviewer gate sits on
+  # the apply step in terraform-release.yml, not here).
+  # ──────────────────────────────────────────────────────────────
+  plan-prod:
+    name: Plan / Prod
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
+
+      - name: Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var-file=environments/prod/prod.tfvars \
+            -no-color \
+            -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/prod_plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Upload plan output
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-plan-output-${{ github.run_id }}
+          path: prod_plan_output.txt
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Job 4: PR Comment — post combined validate + dev + prod result
+  # Waits for all jobs above; runs even if they fail
   # ──────────────────────────────────────────────────────────────
   pr-comment:
     name: PR Comment
     runs-on: ubuntu-latest
-    needs: [validate, plan-dev]
+    needs: [validate, plan-dev, plan-prod]
     if: always()
     steps:
-      - name: Download plan output
+      - name: Download dev plan output
         uses: actions/download-artifact@v4
         with:
           name: dev-plan-output-${{ github.run_id }}
-          path: plan-artifacts
+          path: plan-artifacts/dev
+        continue-on-error: true
+
+      - name: Download prod plan output
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-plan-output-${{ github.run_id }}
+          path: plan-artifacts/prod
         continue-on-error: true
 
       - name: Post or update PR comment
@@ -113,38 +168,53 @@ jobs:
             const fs = require('fs');
 
             const validateResult = '${{ needs.validate.result }}';
-            const planResult     = '${{ needs.plan-dev.result }}';
+            const planDevResult  = '${{ needs.plan-dev.result }}';
+            const planProdResult = '${{ needs.plan-prod.result }}';
 
             const icon = r => r === 'success' ? '✅' : r === 'skipped' ? '⏭️' : '❌';
 
-            let planOutput = '';
-            try {
-              planOutput = fs.readFileSync('plan-artifacts/plan_output.txt', 'utf8');
-            } catch (_) {
-              planOutput = '_Plan output not available._';
-            }
+            const readPlan = path => {
+              try {
+                const txt = fs.readFileSync(path, 'utf8');
+                return txt.length > 30000
+                  ? txt.substring(0, 30000) + '\n\n_...output truncated_'
+                  : txt;
+              } catch (_) {
+                return '_Plan output not available._';
+              }
+            };
 
-            if (planOutput.length > 60000) {
-              planOutput = planOutput.substring(0, 60000) + '\n\n_...output truncated_';
-            }
+            const devPlanOutput  = readPlan('plan-artifacts/dev/dev_plan_output.txt');
+            const prodPlanOutput = readPlan('plan-artifacts/prod/prod_plan_output.txt');
 
             const sha7 = context.sha.slice(0, 7);
 
             const body = [
-              '## Terraform Plan — Dev',
+              '## Terraform Plan Preview',
               '',
-              '| Check | Result |',
+              '| Check        | Result |',
               '|---|---|',
-              `| Validate | ${icon(validateResult)} \`${validateResult}\` |`,
-              `| Plan     | ${icon(planResult)} \`${planResult}\` |`,
+              `| Validate     | ${icon(validateResult)} \`${validateResult}\` |`,
+              `| Plan — dev   | ${icon(planDevResult)} \`${planDevResult}\` |`,
+              `| Plan — prod  | ${icon(planProdResult)} \`${planProdResult}\` |`,
               '',
-              '<details><summary>Plan Output (click to expand)</summary>',
+              '<details><summary>Dev Plan Output (click to expand)</summary>',
               '',
               '```hcl',
-              planOutput,
+              devPlanOutput,
               '```',
               '',
               '</details>',
+              '',
+              '<details><summary>Prod Plan Output (click to expand)</summary>',
+              '',
+              '```hcl',
+              prodPlanOutput,
+              '```',
+              '',
+              '</details>',
+              '',
+              `> Merging this PR will auto-deploy to **dev**. To promote to **prod**, tag the commit: \`git tag v<x>.<y>.<z> && git push --tags\``,
               '',
               `_Triggered by @${{ github.actor }} on commit \`${sha7}\`_`,
             ].join('\n');
@@ -156,7 +226,7 @@ jobs:
               issue_number: context.issue.number,
             });
             const existing = comments.find(
-              c => c.user.type === 'Bot' && c.body.includes('## Terraform Plan — Dev')
+              c => c.user.type === 'Bot' && c.body.includes('## Terraform Plan Preview')
             );
 
             if (existing) {

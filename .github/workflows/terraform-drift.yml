@@ -1,0 +1,178 @@
+name: Terraform Drift Detection
+
+# Runs on a schedule to detect when live infrastructure has drifted from the
+# Terraform state file. Opens a GitHub Issue when drift is found so the team
+# is notified and can reconcile.
+#
+# Also supports manual triggering via workflow_dispatch for ad-hoc checks.
+#
+# GitHub Environments required:
+#   dev       — existing environment with dev AWS credentials
+#   prod-plan — environment with prod AWS credentials, no required reviewers
+
+on:
+  schedule:
+    # Weekdays at 06:00 UTC (runs during business hours for AP-SE teams at ~13:00 SGT)
+    - cron: '0 6 * * 1-5'
+  workflow_dispatch:
+
+env:
+  TF_VERSION: '1.5.0'
+  AWS_REGION: 'ap-southeast-1'
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Check DEV for drift
+  # ──────────────────────────────────────────────────────────────
+  drift-dev:
+    name: Drift / Dev
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    outputs:
+      drifted: ${{ steps.plan.outputs.drifted }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init -backend-config=environments/dev/dev.tfbackend
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan \
+            -var-file=environments/dev/dev.tfvars \
+            -detailed-exitcode \
+            -no-color 2>&1 | tee $GITHUB_WORKSPACE/dev_drift.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          # exit code 2 = changes present (drift); 0 = no changes; 1 = error
+          if [ "$EXIT_CODE" -eq 2 ]; then
+            echo "drifted=true"  >> $GITHUB_OUTPUT
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            echo "drifted=false" >> $GITHUB_OUTPUT
+          else
+            echo "drifted=error" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload drift report
+        if: steps.plan.outputs.drifted != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-drift-${{ github.run_id }}
+          path: dev_drift.txt
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # Check PROD for drift
+  # ──────────────────────────────────────────────────────────────
+  drift-prod:
+    name: Drift / Prod
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    outputs:
+      drifted: ${{ steps.plan.outputs.drifted }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan \
+            -var-file=environments/prod/prod.tfvars \
+            -detailed-exitcode \
+            -no-color 2>&1 | tee $GITHUB_WORKSPACE/prod_drift.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          if [ "$EXIT_CODE" -eq 2 ]; then
+            echo "drifted=true"  >> $GITHUB_OUTPUT
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            echo "drifted=false" >> $GITHUB_OUTPUT
+          else
+            echo "drifted=error" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload drift report
+        if: steps.plan.outputs.drifted != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-drift-${{ github.run_id }}
+          path: prod_drift.txt
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # Open a GitHub Issue when any environment has drifted
+  # Runs only when drift (or an error) is detected
+  # ──────────────────────────────────────────────────────────────
+  notify:
+    name: Notify on Drift
+    runs-on: ubuntu-latest
+    needs: [drift-dev, drift-prod]
+    if: |
+      always() &&
+      (needs.drift-dev.outputs.drifted != 'false' ||
+       needs.drift-prod.outputs.drifted != 'false')
+    permissions:
+      issues: write
+    steps:
+      - name: Open GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const devStatus  = '${{ needs.drift-dev.outputs.drifted }}';
+            const prodStatus = '${{ needs.drift-prod.outputs.drifted }}';
+
+            const label = s => s === 'true' ? '🔴 drift detected' : s === 'error' ? '⚠️ plan error' : '✅ clean';
+
+            const envLines = [
+              `| dev  | ${label(devStatus)} |`,
+              `| prod | ${label(prodStatus)} |`,
+            ];
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `[Drift] Infrastructure drift detected — ${new Date().toISOString().slice(0, 10)}`,
+              body: [
+                '## Infrastructure Drift Detected',
+                '',
+                'The scheduled drift check found that live infrastructure no longer matches Terraform state.',
+                '',
+                '| Environment | Status |',
+                '|---|---|',
+                ...envLines,
+                '',
+                'Download the drift report artifacts from the run below, then open a PR to reconcile:',
+                '',
+                `**Run:** ${runUrl}`,
+                '',
+                '**To fix:** run `terraform plan` locally, review the diff, and apply via the normal PR → merge → tag flow.',
+              ].join('\n'),
+              labels: ['infrastructure', 'drift'],
+            });
