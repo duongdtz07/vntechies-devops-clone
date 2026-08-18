@@ -9,27 +9,44 @@ variable "release_version" {
   description = "Git release tag applied to all resources (e.g. v1.2.3). Set automatically by CI; defaults to 'untagged' for local runs."
 }
 
-variable "instance_type" {
-  default = "t3.micro"
-  type    = string
+variable "frontend_image_tag" {
+  type        = string
+  default     = "latest"
+  description = "Docker image tag to deploy for the frontend service."
 }
 
-variable "ami" {
-  type    = string
-  default = "ami-01b70d44184a858e8"
+variable "backend_image_tag" {
+  type        = string
+  default     = "latest"
+  description = "Docker image tag to deploy for the backend service."
 }
 
-variable "asg_min_size" {
+variable "frontend_cpu" {
+  type    = number
+  default = 512
+}
+
+variable "frontend_memory" {
+  type    = number
+  default = 1024
+}
+
+variable "backend_cpu" {
+  type    = number
+  default = 256
+}
+
+variable "backend_memory" {
+  type    = number
+  default = 512
+}
+
+variable "frontend_desired_count" {
   type    = number
   default = 1
 }
 
-variable "asg_max_size" {
-  type    = number
-  default = 4
-}
-
-variable "asg_desired_capacity" {
+variable "backend_desired_count" {
   type    = number
   default = 1
 }

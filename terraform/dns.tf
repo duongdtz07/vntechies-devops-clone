@@ -3,9 +3,21 @@ data "aws_route53_zone" "main" {
   private_zone = false
 }
 
-resource "aws_route53_record" "app" {
+resource "aws_route53_record" "frontend" {
   zone_id = data.aws_route53_zone.main.zone_id
-  name    = "${var.env}alb.cloudacad.help"
+  name    = "${var.env}-app.cloudacad.help"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.app.dns_name
+    zone_id                = aws_lb.app.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "backend" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "${var.env}-api.cloudacad.help"
   type    = "A"
 
   alias {

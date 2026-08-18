@@ -36,15 +36,15 @@ resource "aws_security_group" "alb" {
   })
 }
 
-resource "aws_security_group" "asg" {
-  name        = "${var.env}-asg-sg"
-  description = "Allow HTTP from ALB only"
+resource "aws_security_group" "ecs_frontend" {
+  name        = "${var.env}-ecs-frontend-sg"
+  description = "Frontend ECS task - allow from ALB only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "HTTP from ALB"
-    from_port       = 80
-    to_port         = 80
+    description     = "Frontend port from ALB"
+    from_port       = 3000
+    to_port         = 3000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -57,7 +57,32 @@ resource "aws_security_group" "asg" {
   }
 
   tags = merge(local.common_tags, {
-    Name = "${var.env}-asg-sg"
+    Name = "${var.env}-ecs-frontend-sg"
+  })
+}
+
+resource "aws_security_group" "ecs_backend" {
+  name        = "${var.env}-ecs-backend-sg"
+  description = "Backend ECS task - allow from ALB only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "Backend port from ALB"
+    from_port       = 3001
+    to_port         = 3001
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${var.env}-ecs-backend-sg"
   })
 }
 
@@ -73,11 +98,12 @@ resource "aws_lb" "app" {
   })
 }
 
-resource "aws_lb_target_group" "app" {
-  name     = "${var.env}-app-tg"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+resource "aws_lb_target_group" "frontend" {
+  name        = "${var.env}-frontend-tg"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
 
   health_check {
     path                = "/"
@@ -87,7 +113,26 @@ resource "aws_lb_target_group" "app" {
   }
 
   tags = merge(local.common_tags, {
-    Name = "${var.env}-app-tg"
+    Name = "${var.env}-frontend-tg"
+  })
+}
+
+resource "aws_lb_target_group" "backend" {
+  name        = "${var.env}-backend-tg"
+  port        = 3001
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    path                = "/health"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    interval            = 30
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${var.env}-backend-tg"
   })
 }
 
@@ -115,61 +160,22 @@ resource "aws_lb_listener" "https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
+    target_group_arn = aws_lb_target_group.frontend.arn
   }
 }
 
-resource "aws_launch_template" "app" {
-  name_prefix   = "${var.env}-app-"
-  image_id      = "ami-060bb41ec84c76d39"
-  instance_type = var.instance_type
+resource "aws_lb_listener_rule" "backend" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 100
 
-  vpc_security_group_ids = [aws_security_group.asg.id]
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = merge(local.common_tags, {
-      Name = "${var.env}-app-asg-instance"
-    })
-  }
-}
-
-resource "aws_autoscaling_group" "app" {
-  name                = "${var.env}-app-asg"
-  min_size            = var.asg_min_size
-  max_size            = var.asg_max_size
-  desired_capacity    = var.asg_desired_capacity
-  vpc_zone_identifier = [aws_subnet.private-subnet-A.id, aws_subnet.private-subnet-B.id]
-  target_group_arns   = [aws_lb_target_group.app.arn]
-
-  launch_template {
-    id      = aws_launch_template.app.id
-    version = "$Latest"
-  }
-
-  # Propagate all common tags (env, managed_by, release_version) plus Name to every EC2 instance
-  dynamic "tag" {
-    for_each = merge(local.common_tags, {
-      Name = "${var.env}-app-asg-instance"
-    })
-    content {
-      key                 = tag.key
-      value               = tag.value
-      propagate_at_launch = true
+  condition {
+    host_header {
+      values = ["${var.env}-api.cloudacad.help"]
     }
   }
-}
 
-resource "aws_autoscaling_policy" "request_count" {
-  name                   = "${var.env}-app-request-count-policy"
-  autoscaling_group_name = aws_autoscaling_group.app.name
-  policy_type            = "TargetTrackingScaling"
-
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ALBRequestCountPerTarget"
-      resource_label         = "${aws_lb.app.arn_suffix}/${aws_lb_target_group.app.arn_suffix}"
-    }
-    target_value = 100.0
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
   }
 }
