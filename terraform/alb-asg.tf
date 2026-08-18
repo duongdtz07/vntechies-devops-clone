@@ -36,6 +36,7 @@ resource "aws_security_group" "alb" {
   })
 }
 
+# Frontend tasks: reachable from ALB only
 resource "aws_security_group" "ecs_frontend" {
   name        = "${var.env}-ecs-frontend-sg"
   description = "Frontend ECS task - allow from ALB only"
@@ -61,17 +62,18 @@ resource "aws_security_group" "ecs_frontend" {
   })
 }
 
+# Backend tasks: reachable from frontend tasks only via Cloud Map
 resource "aws_security_group" "ecs_backend" {
   name        = "${var.env}-ecs-backend-sg"
-  description = "Backend ECS task - allow from ALB only"
+  description = "Backend ECS task - allow from frontend tasks only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Backend port from ALB"
+    description     = "Backend port from frontend tasks"
     from_port       = 3001
     to_port         = 3001
     protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    security_groups = [aws_security_group.ecs_frontend.id]
   }
 
   egress {
@@ -98,6 +100,7 @@ resource "aws_lb" "app" {
   })
 }
 
+# Only the frontend is exposed through the ALB
 resource "aws_lb_target_group" "frontend" {
   name        = "${var.env}-frontend-tg"
   port        = 3000
@@ -114,25 +117,6 @@ resource "aws_lb_target_group" "frontend" {
 
   tags = merge(local.common_tags, {
     Name = "${var.env}-frontend-tg"
-  })
-}
-
-resource "aws_lb_target_group" "backend" {
-  name        = "${var.env}-backend-tg"
-  port        = 3001
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    path                = "/health"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 30
-  }
-
-  tags = merge(local.common_tags, {
-    Name = "${var.env}-backend-tg"
   })
 }
 
@@ -161,21 +145,5 @@ resource "aws_lb_listener" "https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.frontend.arn
-  }
-}
-
-resource "aws_lb_listener_rule" "backend" {
-  listener_arn = aws_lb_listener.https.arn
-  priority     = 100
-
-  condition {
-    host_header {
-      values = ["${var.env}-api.cloudacad.help"]
-    }
-  }
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
   }
 }

@@ -34,6 +34,7 @@ resource "aws_ecs_task_definition" "backend" {
   cpu                      = var.backend_cpu
   memory                   = var.backend_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "ARM64"
@@ -74,6 +75,7 @@ resource "aws_ecs_task_definition" "frontend" {
   cpu                      = var.frontend_cpu
   memory                   = var.frontend_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "ARM64"
@@ -90,7 +92,7 @@ resource "aws_ecs_task_definition" "frontend" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3000" },
-        { name = "NEXT_PUBLIC_API_URL", value = "https://${var.env}-api.cloudacad.help" }
+        { name = "API_URL", value = "http://backend.${var.env}.local:3001" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -108,6 +110,7 @@ resource "aws_ecs_task_definition" "frontend" {
   })
 }
 
+# Backend: private, registered with Cloud Map — no ALB attachment
 resource "aws_ecs_service" "backend" {
   name            = "${var.env}-backend"
   cluster         = aws_ecs_cluster.main.id
@@ -120,18 +123,14 @@ resource "aws_ecs_service" "backend" {
     security_groups = [aws_security_group.ecs_backend.id]
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.backend.arn
-    container_name   = "backend"
-    container_port   = 3001
+  service_registries {
+    registry_arn = aws_service_discovery_service.backend.arn
   }
 
   deployment_circuit_breaker {
     enable   = true
     rollback = true
   }
-
-  depends_on = [aws_lb_listener_rule.backend]
 
   tags = local.common_tags
 }
