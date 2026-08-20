@@ -23,22 +23,34 @@ variable "backend_image_tag" {
 
 variable "frontend_cpu" {
   type    = number
-  default = 512
+  default = 1024
 }
 
 variable "frontend_memory" {
   type    = number
-  default = 1024
+  default = 2048
 }
 
 variable "backend_cpu" {
   type    = number
-  default = 256
+  default = 512
 }
 
 variable "backend_memory" {
   type    = number
-  default = 512
+  default = 1024
+}
+
+variable "datadog_api_key" {
+  type        = string
+  sensitive   = true
+  description = "Datadog API key. Set via TF_VAR_datadog_api_key or a secrets-backed tfvars. Never commit the value."
+}
+
+variable "datadog_site" {
+  type        = string
+  default     = "datadoghq.com"
+  description = "Datadog intake site (e.g. datadoghq.com, datadoghq.eu, us3.datadoghq.com, ap1.datadoghq.com)."
 }
 
 variable "frontend_desired_count" {

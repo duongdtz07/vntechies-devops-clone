@@ -41,6 +41,58 @@ resource "aws_ecs_task_definition" "backend" {
   }
 
   container_definitions = jsonencode([
+    # FireLens log router — must start before app containers
+    {
+      name      = "log_router"
+      image     = "amazon/aws-for-fluent-bit:stable"
+      essential = true
+      firelensConfiguration = {
+        type = "fluentbit"
+        options = {
+          "enable-ecs-log-metadata" = "true"
+        }
+      }
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.log_router.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "backend"
+        }
+      }
+      memoryReservation = 64
+    },
+    # Datadog Agent — metrics, APM traces, health checks
+    {
+      name      = "datadog-agent"
+      image     = "public.ecr.aws/datadog/agent:latest"
+      essential = false
+      environment = [
+        { name = "DD_SITE", value = var.datadog_site },
+        { name = "ECS_FARGATE", value = "true" },
+        { name = "DD_APM_ENABLED", value = "true" },
+        { name = "DD_APM_NON_LOCAL_TRAFFIC", value = "true" },
+        { name = "DD_PROCESS_AGENT_ENABLED", value = "true" },
+        { name = "DD_LOGS_ENABLED", value = "false" },
+        { name = "DD_ENV", value = var.env },
+        { name = "DD_SERVICE", value = "backend" }
+      ]
+      secrets = [
+        { name = "DD_API_KEY", valueFrom = aws_secretsmanager_secret.datadog_api_key.arn }
+      ]
+      portMappings = [
+        { containerPort = 8126, protocol = "tcp" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.datadog_agent.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "backend"
+        }
+      }
+      memoryReservation = 256
+    },
     {
       name      = "backend"
       image     = "${aws_ecr_repository.backend.repository_url}:${var.backend_image_tag}"
@@ -52,13 +104,24 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "NODE_ENV", value = "production" },
         { name = "PORT", value = "3001" }
       ]
+      dependsOn = [
+        { containerName = "log_router", condition = "START" }
+      ]
       logConfiguration = {
-        logDriver = "awslogs"
+        logDriver = "awsfirelens"
         options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.backend.name
-          "awslogs-region"        = data.aws_region.current.name
-          "awslogs-stream-prefix" = "ecs"
+          "Name"       = "datadog"
+          "Host"       = local.dd_log_intake_host
+          "TLS"        = "on"
+          "dd_service" = "backend"
+          "dd_source"  = "nodejs"
+          "dd_tags"    = "env:${var.env}"
+          "provider"   = "ecs"
+          "compress"   = "gzip"
         }
+        secretOptions = [
+          { name = "apikey", valueFrom = aws_secretsmanager_secret.datadog_api_key.arn }
+        ]
       }
     }
   ])
@@ -82,6 +145,58 @@ resource "aws_ecs_task_definition" "frontend" {
   }
 
   container_definitions = jsonencode([
+    # FireLens log router — must start before app containers
+    {
+      name      = "log_router"
+      image     = "amazon/aws-for-fluent-bit:stable"
+      essential = true
+      firelensConfiguration = {
+        type = "fluentbit"
+        options = {
+          "enable-ecs-log-metadata" = "true"
+        }
+      }
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.log_router.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "frontend"
+        }
+      }
+      memoryReservation = 64
+    },
+    # Datadog Agent — metrics, APM traces, health checks
+    {
+      name      = "datadog-agent"
+      image     = "public.ecr.aws/datadog/agent:latest"
+      essential = false
+      environment = [
+        { name = "DD_SITE", value = var.datadog_site },
+        { name = "ECS_FARGATE", value = "true" },
+        { name = "DD_APM_ENABLED", value = "true" },
+        { name = "DD_APM_NON_LOCAL_TRAFFIC", value = "true" },
+        { name = "DD_PROCESS_AGENT_ENABLED", value = "true" },
+        { name = "DD_LOGS_ENABLED", value = "false" },
+        { name = "DD_ENV", value = var.env },
+        { name = "DD_SERVICE", value = "frontend" }
+      ]
+      secrets = [
+        { name = "DD_API_KEY", valueFrom = aws_secretsmanager_secret.datadog_api_key.arn }
+      ]
+      portMappings = [
+        { containerPort = 8126, protocol = "tcp" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.datadog_agent.name
+          "awslogs-region"        = data.aws_region.current.name
+          "awslogs-stream-prefix" = "frontend"
+        }
+      }
+      memoryReservation = 256
+    },
     {
       name      = "frontend"
       image     = "${aws_ecr_repository.frontend.repository_url}:${var.frontend_image_tag}"
@@ -94,13 +209,24 @@ resource "aws_ecs_task_definition" "frontend" {
         { name = "PORT", value = "3000" },
         { name = "API_URL", value = "http://backend.${var.env}.local:3001" }
       ]
+      dependsOn = [
+        { containerName = "log_router", condition = "START" }
+      ]
       logConfiguration = {
-        logDriver = "awslogs"
+        logDriver = "awsfirelens"
         options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.frontend.name
-          "awslogs-region"        = data.aws_region.current.name
-          "awslogs-stream-prefix" = "ecs"
+          "Name"       = "datadog"
+          "Host"       = local.dd_log_intake_host
+          "TLS"        = "on"
+          "dd_service" = "frontend"
+          "dd_source"  = "nodejs"
+          "dd_tags"    = "env:${var.env}"
+          "provider"   = "ecs"
+          "compress"   = "gzip"
         }
+        secretOptions = [
+          { name = "apikey", valueFrom = aws_secretsmanager_secret.datadog_api_key.arn }
+        ]
       }
     }
   ])
