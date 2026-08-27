@@ -14,6 +14,8 @@ on:
     paths:
       - "terraform/session-01-ec2/**"
       - "terraform/session-02-ecs/**"
+      - "terraform/session-03-eks/**"
+      - "terraform/session-04-argocd/**"
       - ".github/workflows/terraform-*.yml"
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [session-01-ec2, session-02-ecs]
+        module: [session-01-ec2, session-02-ecs, session-03-eks, session-04-argocd]
       fail-fast: false
     defaults:
       run:
@@ -63,7 +65,7 @@ jobs:
     environment: dev
     strategy:
       matrix:
-        module: [session-01-ec2, session-02-ecs]
+        module: [session-01-ec2, session-02-ecs, session-03-eks, session-04-argocd]
       fail-fast: false
     defaults:
       run:
@@ -90,6 +92,8 @@ jobs:
             -detailed-exitcode \
             2>&1 | tee $GITHUB_WORKSPACE/plan_dev_${{ matrix.module }}.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        # session-04-argocd plan fails in PRs if the EKS cluster doesn't exist yet;
+        # that's expected — the plan runs cleanly after session-03-eks is deployed.
         continue-on-error: true
 
       - name: Upload plan output
@@ -108,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [session-01-ec2, session-02-ecs]
+        module: [session-01-ec2, session-02-ecs, session-03-eks, session-04-argocd]
       fail-fast: false
     defaults:
       run:

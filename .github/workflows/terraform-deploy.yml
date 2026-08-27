@@ -11,14 +11,6 @@ name: Terraform Deploy
 # because its Helm/Kubernetes providers need the EKS cluster to exist.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "terraform/session-01-ec2/**"
-      - "terraform/session-02-ecs/**"
-      - "terraform/session-03-eks/**"
-      - "terraform/session-04-argocd/**"
-      - ".github/workflows/terraform-*.yml"
   workflow_dispatch:
     inputs:
       module:
@@ -26,12 +18,11 @@ on:
         required: true
         type: choice
         options:
-          - all
           - session-01-ec2
           - session-02-ecs
           - session-03-eks
           - session-04-argocd
-        default: all
+        default: session-01-ec2
 
 concurrency:
   group: terraform-deploy
@@ -56,13 +47,7 @@ jobs:
       - name: Set phase lists
         id: set
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            MODULE="${{ inputs.module }}"
-          else
-            MODULE="all"
-          fi
-
-          case "$MODULE" in
+          case "${{ inputs.module }}" in
             session-01-ec2)
               echo 'infra_modules=["session-01-ec2"]' >> $GITHUB_OUTPUT
               echo 'has_infra=true'                   >> $GITHUB_OUTPUT
@@ -78,10 +63,6 @@ jobs:
             session-04-argocd)
               echo 'infra_modules=["__none__"]'       >> $GITHUB_OUTPUT
               echo 'has_infra=false'                  >> $GITHUB_OUTPUT
-              echo 'deploy_argocd=true'               >> $GITHUB_OUTPUT ;;
-            *)  # all | push event
-              echo 'infra_modules=["session-01-ec2","session-02-ecs","session-03-eks"]' >> $GITHUB_OUTPUT
-              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
               echo 'deploy_argocd=true'               >> $GITHUB_OUTPUT ;;
           esac
 

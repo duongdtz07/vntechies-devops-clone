@@ -1,0 +1,3 @@
+bucket = "vntechies-bucket"
+key    = "session-03-eks/prod/terraform.tfstate"
+region = "ap-southeast-1"

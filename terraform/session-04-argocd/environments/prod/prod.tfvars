@@ -1,0 +1,5 @@
+env                  = "prod"
+argocd_chart_version = "7.7.0"
+github_repo_url      = "https://github.com/namtnp123/vntechies-devops"
+github_branch        = "main"
+argocd_app_path      = "k8s-manifest"

@@ -4,10 +4,9 @@ name: Terraform Release (Prod)
 # This is the primary path for production deployment.
 # Can also be triggered manually to deploy a specific module.
 #
-# Flow:
-#   git tag v1.2.3 && git push --tags
-#     → plan-prod  (automatic, saves binary plan artifact)
-#     → apply-prod (waits for manual approval via `prod` GitHub Environment)
+# Deploy order:
+#   Phase 1 (parallel, with reviewer gate): session-01-ec2 | session-02-ecs | session-03-eks
+#   Phase 2 (after phase 1, with reviewer gate): session-04-argocd
 #
 # GitHub Environments required:
 #   prod — required reviewers set; holds prod AWS credentials
@@ -23,10 +22,11 @@ on:
         required: true
         type: choice
         options:
-          - all
           - session-01-ec2
           - session-02-ecs
-        default: all
+          - session-03-eks
+          - session-04-argocd
+        default: session-01-ec2
       release_version:
         description: 'Release version tag (e.g. v1.2.3)'
         required: true
@@ -41,42 +41,57 @@ env:
   AWS_REGION: 'ap-southeast-1'
 
 jobs:
-  # ──────────────────────────────────────────────────────────────
-  # Detect which modules to release and the version tag
-  # ──────────────────────────────────────────────────────────────
   detect:
     name: Detect Modules
     runs-on: ubuntu-latest
     outputs:
-      modules: ${{ steps.set.outputs.modules }}
-      version: ${{ steps.set.outputs.version }}
+      infra_modules:  ${{ steps.set.outputs.infra_modules }}
+      has_infra:      ${{ steps.set.outputs.has_infra }}
+      deploy_argocd:  ${{ steps.set.outputs.deploy_argocd }}
+      version:        ${{ steps.set.outputs.version }}
     steps:
       - id: set
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.release_version }}"
-            if [ "${{ inputs.module }}" != "all" ]; then
-              echo 'modules=["${{ inputs.module }}"]' >> $GITHUB_OUTPUT
-            else
-              echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
-            fi
+            MODULE="${{ inputs.module }}"
           else
-            VERSION="${{ github.ref_name }}"
-            echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
+            # Tag push — require explicit dispatch to target a specific session
+            echo "Tag push detected. Please use workflow_dispatch to select a module."
+            exit 1
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-  # ──────────────────────────────────────────────────────────────
-  # Stage 1: Plan Prod — automatic, no human gate
-  # ──────────────────────────────────────────────────────────────
-  plan-prod:
+          case "$MODULE" in
+            session-01-ec2)
+              echo 'infra_modules=["session-01-ec2"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-02-ecs)
+              echo 'infra_modules=["session-02-ecs"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-03-eks)
+              echo 'infra_modules=["session-03-eks"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-04-argocd)
+              echo 'infra_modules=["__none__"]'       >> $GITHUB_OUTPUT
+              echo 'has_infra=false'                  >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=true'               >> $GITHUB_OUTPUT ;;
+          esac
+
+  # ── Phase 1: Plan infra (01 + 02 + 03) ───────────────────────────────────
+
+  plan-infra:
     name: Plan / Prod / ${{ matrix.module }}
     runs-on: ubuntu-latest
     needs: detect
+    if: needs.detect.outputs.has_infra == 'true'
     environment: prod
     strategy:
       matrix:
-        module: ${{ fromJson(needs.detect.outputs.modules) }}
+        module: ${{ fromJson(needs.detect.outputs.infra_modules) }}
       fail-fast: false
     defaults:
       run:
@@ -84,24 +99,19 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Init
         run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
-
       - name: Plan
         run: |
           terraform plan \
             -var-file=environments/prod/prod.tfvars \
             -var "release_version=${{ needs.detect.outputs.version }}" \
             -out=${{ matrix.module }}-prod.tfplan
-
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -109,18 +119,17 @@ jobs:
           path: terraform/${{ matrix.module }}/${{ matrix.module }}-prod.tfplan
           retention-days: 7
 
-  # ──────────────────────────────────────────────────────────────
-  # Stage 2: Apply Prod — pauses for required reviewer approval
-  # Reviewer should inspect the plan artifact before approving.
-  # ──────────────────────────────────────────────────────────────
-  apply-prod:
+  # ── Phase 1: Apply infra — reviewer gate via `prod` environment ───────────
+
+  apply-infra:
     name: Apply / Prod / ${{ matrix.module }}
     runs-on: ubuntu-latest
-    needs: [detect, plan-prod]
+    needs: [detect, plan-infra]
+    if: needs.detect.outputs.has_infra == 'true' && needs.plan-infra.result == 'success'
     environment: prod
     strategy:
       matrix:
-        module: ${{ fromJson(needs.detect.outputs.modules) }}
+        module: ${{ fromJson(needs.detect.outputs.infra_modules) }}
       fail-fast: false
     defaults:
       run:
@@ -128,22 +137,82 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Init
         run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
-
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ matrix.module }}-prod-${{ needs.detect.outputs.version }}
           path: terraform/${{ matrix.module }}
-
       - name: Apply
         run: terraform apply -auto-approve ${{ matrix.module }}-prod.tfplan
+
+  # ── Phase 2: Plan ArgoCD (after infra) ───────────────────────────────────
+
+  plan-argocd:
+    name: Plan / Prod / session-04-argocd
+    runs-on: ubuntu-latest
+    needs: [detect, apply-infra]
+    if: |
+      always() &&
+      needs.detect.outputs.deploy_argocd == 'true' &&
+      (needs.apply-infra.result == 'success' || needs.apply-infra.result == 'skipped')
+    environment: prod
+    defaults:
+      run:
+        working-directory: terraform/session-04-argocd
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Init
+        run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
+      - name: Plan
+        run: |
+          terraform plan \
+            -var-file=environments/prod/prod.tfvars \
+            -var "release_version=${{ needs.detect.outputs.version }}" \
+            -out=session-04-argocd-prod.tfplan
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-session-04-argocd-prod-${{ needs.detect.outputs.version }}
+          path: terraform/session-04-argocd/session-04-argocd-prod.tfplan
+          retention-days: 7
+
+  # ── Phase 2: Apply ArgoCD — reviewer gate via `prod` environment ──────────
+
+  apply-argocd:
+    name: Apply / Prod / session-04-argocd
+    runs-on: ubuntu-latest
+    needs: [detect, plan-argocd]
+    environment: prod
+    defaults:
+      run:
+        working-directory: terraform/session-04-argocd
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Init
+        run: terraform init -backend-config=environments/prod/prod.tfbackend -reconfigure
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-session-04-argocd-prod-${{ needs.detect.outputs.version }}
+          path: terraform/session-04-argocd
+      - name: Apply
+        run: terraform apply -auto-approve session-04-argocd-prod.tfplan

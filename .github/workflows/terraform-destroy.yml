@@ -12,8 +12,10 @@ on:
         required: true
         type: choice
         options:
+          - session-04-argocd
           - session-01-ec2
           - session-02-ecs
+          - session-03-eks
       environment:
         description: 'Environment to destroy'
         required: true
