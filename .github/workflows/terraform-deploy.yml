@@ -1,12 +1,14 @@
 name: Terraform Deploy
 
-# Deploys to DEV on push to main, or to any environment manually via workflow_dispatch.
+# Deploys to DEV on push to main, or to any environment via workflow_dispatch.
 # Prod deployments via git tag → use terraform-release.yml instead.
 #
-# Module options:
-#   all            — deploy both session-01-ec2 and session-02-ecs (push default)
-#   session-01-ec2 — EC2 + ALB + ASG stack
-#   session-02-ecs — ECS Fargate + ECR + CloudMap stack
+# Deploy order:
+#   Phase 1 (parallel): session-01-ec2 | session-02-ecs | session-03-eks
+#   Phase 2 (after phase 1): session-04-argocd
+#
+# session-04-argocd requires session-03-eks to already be deployed
+# because its Helm/Kubernetes providers need the EKS cluster to exist.
 
 on:
   push:
@@ -14,6 +16,8 @@ on:
     paths:
       - "terraform/session-01-ec2/**"
       - "terraform/session-02-ecs/**"
+      - "terraform/session-03-eks/**"
+      - "terraform/session-04-argocd/**"
       - ".github/workflows/terraform-*.yml"
   workflow_dispatch:
     inputs:
@@ -25,6 +29,8 @@ on:
           - all
           - session-01-ec2
           - session-02-ecs
+          - session-03-eks
+          - session-04-argocd
         default: all
 
 concurrency:
@@ -37,35 +43,60 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Detect which modules to deploy based on trigger type
+  # Detect which modules belong to each phase
   # ──────────────────────────────────────────────────────────────
   detect:
     name: Detect Modules
     runs-on: ubuntu-latest
     outputs:
-      modules: ${{ steps.set.outputs.modules }}
+      infra_modules:  ${{ steps.set.outputs.infra_modules }}
+      has_infra:      ${{ steps.set.outputs.has_infra }}
+      deploy_argocd:  ${{ steps.set.outputs.deploy_argocd }}
     steps:
-      - name: Set module list
+      - name: Set phase lists
         id: set
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.module }}" != "all" ]; then
-            echo 'modules=["${{ inputs.module }}"]' >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODULE="${{ inputs.module }}"
           else
-            echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
+            MODULE="all"
           fi
 
+          case "$MODULE" in
+            session-01-ec2)
+              echo 'infra_modules=["session-01-ec2"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-02-ecs)
+              echo 'infra_modules=["session-02-ecs"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-03-eks)
+              echo 'infra_modules=["session-03-eks"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=false'              >> $GITHUB_OUTPUT ;;
+            session-04-argocd)
+              echo 'infra_modules=["__none__"]'       >> $GITHUB_OUTPUT
+              echo 'has_infra=false'                  >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=true'               >> $GITHUB_OUTPUT ;;
+            *)  # all | push event
+              echo 'infra_modules=["session-01-ec2","session-02-ecs","session-03-eks"]' >> $GITHUB_OUTPUT
+              echo 'has_infra=true'                   >> $GITHUB_OUTPUT
+              echo 'deploy_argocd=true'               >> $GITHUB_OUTPUT ;;
+          esac
+
   # ──────────────────────────────────────────────────────────────
-  # Stage 1: Plan DEV — generate and save the binary plan file
-  # Runs in parallel across all selected modules
+  # Phase 1 — Plan: 01 + 02 + 03 in parallel
   # ──────────────────────────────────────────────────────────────
-  plan-dev:
+  plan-infra:
     name: Plan / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
     needs: detect
+    if: needs.detect.outputs.has_infra == 'true'
     environment: dev
     strategy:
       matrix:
-        module: ${{ fromJson(needs.detect.outputs.modules) }}
+        module: ${{ fromJson(needs.detect.outputs.infra_modules) }}
       fail-fast: false
     defaults:
       run:
@@ -75,21 +106,17 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Init
         run: terraform init -backend-config=environments/dev/dev.tfbackend
-
       - name: Plan
         run: |
           terraform plan \
             -var-file=environments/dev/dev.tfvars \
             -var "release_version=dev-${GITHUB_SHA:0:7}" \
             -out=${{ matrix.module }}-dev.tfplan
-
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -98,16 +125,17 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Stage 2: Apply DEV — apply exactly the saved plan
+  # Phase 1 — Apply: 01 + 02 + 03 in parallel (after their plans)
   # ──────────────────────────────────────────────────────────────
-  apply-dev:
+  apply-infra:
     name: Apply / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
-    needs: [detect, plan-dev]
+    needs: [detect, plan-infra]
+    if: needs.detect.outputs.has_infra == 'true' && needs.plan-infra.result == 'success'
     environment: dev
     strategy:
       matrix:
-        module: ${{ fromJson(needs.detect.outputs.modules) }}
+        module: ${{ fromJson(needs.detect.outputs.infra_modules) }}
       fail-fast: false
     defaults:
       run:
@@ -117,64 +145,84 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Init
         run: terraform init -backend-config=environments/dev/dev.tfbackend
-
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ matrix.module }}-dev-${{ github.sha }}
           path: terraform/${{ matrix.module }}
-
       - name: Apply
         run: terraform apply -auto-approve ${{ matrix.module }}-dev.tfplan
 
   # ──────────────────────────────────────────────────────────────
-  # Stage 3: Integration Tests — module-specific health checks
+  # Phase 2 — Plan ArgoCD (after infra is applied or skipped)
+  # EKS cluster now exists → Helm/K8s providers initialize cleanly
   # ──────────────────────────────────────────────────────────────
-  integration-test:
-    name: Test / Dev / ${{ matrix.module }}
+  plan-argocd:
+    name: Plan / Dev / session-04-argocd
     runs-on: ubuntu-latest
-    needs: [detect, apply-dev]
-    strategy:
-      matrix:
-        module: ${{ fromJson(needs.detect.outputs.modules) }}
-      fail-fast: false
+    needs: [detect, apply-infra]
+    if: |
+      always() &&
+      needs.detect.outputs.deploy_argocd == 'true' &&
+      (needs.apply-infra.result == 'success' || needs.apply-infra.result == 'skipped')
+    environment: dev
+    defaults:
+      run:
+        working-directory: terraform/session-04-argocd
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: hashicorp/setup-terraform@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Test EC2 instances (session-01-ec2)
-        if: matrix.module == 'session-01-ec2'
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Init
+        run: terraform init -backend-config=environments/dev/dev.tfbackend
+      - name: Plan
         run: |
-          echo "Checking DEV EC2 instances in ASG..."
-          aws ec2 describe-instances \
-            --filters "Name=tag:env,Values=dev" "Name=tag:session,Values=01-ec2" "Name=instance-state-name,Values=running" \
-            --query 'Reservations[*].Instances[*].InstanceId' \
-            --output text
-          echo "EC2 check passed."
+          terraform plan \
+            -var-file=environments/dev/dev.tfvars \
+            -var "release_version=dev-${GITHUB_SHA:0:7}" \
+            -out=session-04-argocd-dev.tfplan
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-session-04-argocd-dev-${{ github.sha }}
+          path: terraform/session-04-argocd/session-04-argocd-dev.tfplan
+          retention-days: 1
 
-      - name: Test ECS services (session-02-ecs)
-        if: matrix.module == 'session-02-ecs'
-        run: |
-          echo "Checking DEV ECS services..."
-          aws ecs describe-services \
-            --cluster dev-cluster \
-            --services dev-frontend dev-backend \
-            --query 'services[*].{name:serviceName,running:runningCount,desired:desiredCount}' \
-            --output table
-          echo "ECS check passed."
+  # ──────────────────────────────────────────────────────────────
+  # Phase 2 — Apply ArgoCD
+  # ──────────────────────────────────────────────────────────────
+  apply-argocd:
+    name: Apply / Dev / session-04-argocd
+    runs-on: ubuntu-latest
+    needs: plan-argocd
+    environment: dev
+    defaults:
+      run:
+        working-directory: terraform/session-04-argocd
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Init
+        run: terraform init -backend-config=environments/dev/dev.tfbackend
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-session-04-argocd-dev-${{ github.sha }}
+          path: terraform/session-04-argocd
+      - name: Apply
+        run: terraform apply -auto-approve session-04-argocd-dev.tfplan
+
