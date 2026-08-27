@@ -1,3 +1,0 @@
-bucket = "vntechies-bucket"
-key    = "terraform/prod/terraform.tfstate"
-region = "ap-southeast-1"

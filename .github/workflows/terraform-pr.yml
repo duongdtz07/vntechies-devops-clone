@@ -1,24 +1,24 @@
 name: Terraform PR Validation
 
 # Runs on every PR targeting main.
-# Validates code quality and posts a plan preview for BOTH environments as a PR comment.
+# Validates both modules and posts a plan preview for both modules × both environments.
 # Nothing is applied — this workflow is read-only.
 #
 # GitHub Environments required:
 #   dev       — existing environment with AWS credentials
 #   prod-plan — environment WITHOUT required reviewers, same prod AWS credentials
-#               (keeps the reviewer gate on apply only, not on PR planning)
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - "terraform/**"
+      - "terraform/session-01-ec2/**"
+      - "terraform/session-02-ecs/**"
       - ".github/workflows/terraform-*.yml"
 
 permissions:
   contents: read
-  pull-requests: write # required to post / update PR comments
+  pull-requests: write
 
 env:
   TF_VERSION: "1.5.0"
@@ -26,15 +26,18 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Job 1: Validate — format check + terraform validate
-  # Runs in parallel with plan jobs (no dependency between them)
+  # Job 1: Validate — fmt check + terraform validate per module
   # ──────────────────────────────────────────────────────────────
   validate:
-    name: Validate
+    name: Validate / ${{ matrix.module }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [session-01-ec2, session-02-ecs]
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,23 +48,26 @@ jobs:
       - name: Format check
         run: terraform fmt -check -recursive
 
-      - name: Init (no backend — only needed for validate)
+      - name: Init (no backend)
         run: terraform init -backend=false
 
       - name: Validate
         run: terraform validate
 
   # ──────────────────────────────────────────────────────────────
-  # Job 2: Plan Dev — show what would change in dev if merged
-  # Runs in parallel with validate and plan-prod
+  # Job 2: Plan Dev — show what would change in dev per module
   # ──────────────────────────────────────────────────────────────
   plan-dev:
-    name: Plan / Dev
+    name: Plan / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
     environment: dev
+    strategy:
+      matrix:
+        module: [session-01-ec2, session-02-ecs]
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -81,31 +87,32 @@ jobs:
           terraform plan \
             -var-file=environments/dev/dev.tfvars \
             -no-color \
-            -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/dev_plan_output.txt
+            -detailed-exitcode \
+            2>&1 | tee $GITHUB_WORKSPACE/plan_dev_${{ matrix.module }}.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
         continue-on-error: true
 
       - name: Upload plan output
         uses: actions/upload-artifact@v4
         with:
-          name: dev-plan-output-${{ github.run_id }}
-          path: dev_plan_output.txt
+          name: plan-dev-${{ matrix.module }}-${{ github.run_id }}
+          path: plan_dev_${{ matrix.module }}.txt
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Job 3: Plan Prod — show what would change in prod if merged
-  # Runs in parallel with validate and plan-dev
-  #
-  # Requires a `prod-plan` GitHub Environment with prod AWS
-  # credentials but NO required reviewers (reviewer gate sits on
-  # the apply step in terraform-release.yml, not here).
+  # Job 3: Plan Prod — show what would change in prod per module
+  # Uses prod-plan environment (no required reviewers)
   # ──────────────────────────────────────────────────────────────
   plan-prod:
-    name: Plan / Prod
+    name: Plan / Prod / ${{ matrix.module }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [session-01-ec2, session-02-ecs]
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -125,20 +132,20 @@ jobs:
           terraform plan \
             -var-file=environments/prod/prod.tfvars \
             -no-color \
-            -detailed-exitcode 2>&1 | tee $GITHUB_WORKSPACE/prod_plan_output.txt
+            -detailed-exitcode \
+            2>&1 | tee $GITHUB_WORKSPACE/plan_prod_${{ matrix.module }}.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
         continue-on-error: true
 
       - name: Upload plan output
         uses: actions/upload-artifact@v4
         with:
-          name: prod-plan-output-${{ github.run_id }}
-          path: prod_plan_output.txt
+          name: plan-prod-${{ matrix.module }}-${{ github.run_id }}
+          path: plan_prod_${{ matrix.module }}.txt
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Job 4: PR Comment — post combined validate + dev + prod result
-  # Waits for all jobs above; runs even if they fail
+  # Job 4: PR Comment — post combined results for all modules
   # ──────────────────────────────────────────────────────────────
   pr-comment:
     name: PR Comment
@@ -146,18 +153,12 @@ jobs:
     needs: [validate, plan-dev, plan-prod]
     if: always()
     steps:
-      - name: Download dev plan output
+      - name: Download all plan artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dev-plan-output-${{ github.run_id }}
-          path: plan-artifacts/dev
-        continue-on-error: true
-
-      - name: Download prod plan output
-        uses: actions/download-artifact@v4
-        with:
-          name: prod-plan-output-${{ github.run_id }}
-          path: plan-artifacts/prod
+          pattern: plan-*-${{ github.run_id }}
+          path: plan-artifacts
+          merge-multiple: true
         continue-on-error: true
 
       - name: Post or update PR comment
@@ -173,53 +174,56 @@ jobs:
 
             const icon = r => r === 'success' ? '✅' : r === 'skipped' ? '⏭️' : '❌';
 
-            const readPlan = path => {
+            const readPlan = name => {
               try {
-                const txt = fs.readFileSync(path, 'utf8');
-                return txt.length > 30000
-                  ? txt.substring(0, 30000) + '\n\n_...output truncated_'
+                const txt = fs.readFileSync(`plan-artifacts/${name}`, 'utf8');
+                return txt.length > 20000
+                  ? txt.substring(0, 20000) + '\n\n_...output truncated_'
                   : txt;
               } catch (_) {
                 return '_Plan output not available._';
               }
             };
 
-            const devPlanOutput  = readPlan('plan-artifacts/dev/dev_plan_output.txt');
-            const prodPlanOutput = readPlan('plan-artifacts/prod/prod_plan_output.txt');
-
+            const modules = ['session-01-ec2', 'session-02-ecs'];
             const sha7 = context.sha.slice(0, 7);
+
+            const planSections = modules.map(m => [
+              `### Module: \`${m}\``,
+              '',
+              '<details><summary>Dev Plan (click to expand)</summary>',
+              '',
+              '```',
+              readPlan(`plan_dev_${m}.txt`),
+              '```',
+              '',
+              '</details>',
+              '',
+              '<details><summary>Prod Plan (click to expand)</summary>',
+              '',
+              '```',
+              readPlan(`plan_prod_${m}.txt`),
+              '```',
+              '',
+              '</details>',
+            ].join('\n')).join('\n\n---\n\n');
 
             const body = [
               '## Terraform Plan Preview',
               '',
-              '| Check        | Result |',
+              '| Check | Result |',
               '|---|---|',
-              `| Validate     | ${icon(validateResult)} \`${validateResult}\` |`,
-              `| Plan — dev   | ${icon(planDevResult)} \`${planDevResult}\` |`,
-              `| Plan — prod  | ${icon(planProdResult)} \`${planProdResult}\` |`,
+              `| Validate (all modules) | ${icon(validateResult)} \`${validateResult}\` |`,
+              `| Plan — dev             | ${icon(planDevResult)} \`${planDevResult}\` |`,
+              `| Plan — prod            | ${icon(planProdResult)} \`${planProdResult}\` |`,
               '',
-              '<details><summary>Dev Plan Output (click to expand)</summary>',
-              '',
-              '```hcl',
-              devPlanOutput,
-              '```',
-              '',
-              '</details>',
-              '',
-              '<details><summary>Prod Plan Output (click to expand)</summary>',
-              '',
-              '```hcl',
-              prodPlanOutput,
-              '```',
-              '',
-              '</details>',
+              planSections,
               '',
               `> Merging this PR will auto-deploy to **dev**. To promote to **prod**, tag the commit: \`git tag v<x>.<y>.<z> && git push --tags\``,
               '',
               `_Triggered by @${{ github.actor }} on commit \`${sha7}\`_`,
             ].join('\n');
 
-            // Update existing bot comment rather than spamming new ones
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo:  context.repo.repo,

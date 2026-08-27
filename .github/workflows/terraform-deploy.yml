@@ -1,18 +1,32 @@
-name: Terraform Deploy (Dev)
+name: Terraform Deploy
 
-# Runs when code is merged into main.
-# Deploys to DEV only — prod is promoted via a signed git tag (terraform-release.yml).
-# Plan is saved as an artifact and reused by the apply job so what you reviewed is
-# exactly what gets applied.
+# Deploys to DEV on push to main, or to any environment manually via workflow_dispatch.
+# Prod deployments via git tag → use terraform-release.yml instead.
+#
+# Module options:
+#   all            — deploy both session-01-ec2 and session-02-ecs (push default)
+#   session-01-ec2 — EC2 + ALB + ASG stack
+#   session-02-ecs — ECS Fargate + ECR + CloudMap stack
 
 on:
   push:
     branches: [main]
     paths:
-      - "terraform/**"
+      - "terraform/session-01-ec2/**"
+      - "terraform/session-02-ecs/**"
       - ".github/workflows/terraform-*.yml"
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Module to deploy'
+        required: true
+        type: choice
+        options:
+          - all
+          - session-01-ec2
+          - session-02-ecs
+        default: all
 
-# Prevent concurrent deployments — let the running pipeline finish before starting another
 concurrency:
   group: terraform-deploy
   cancel-in-progress: false
@@ -23,15 +37,39 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
+  # Detect which modules to deploy based on trigger type
+  # ──────────────────────────────────────────────────────────────
+  detect:
+    name: Detect Modules
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set.outputs.modules }}
+    steps:
+      - name: Set module list
+        id: set
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.module }}" != "all" ]; then
+            echo 'modules=["${{ inputs.module }}"]' >> $GITHUB_OUTPUT
+          else
+            echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
+          fi
+
+  # ──────────────────────────────────────────────────────────────
   # Stage 1: Plan DEV — generate and save the binary plan file
+  # Runs in parallel across all selected modules
   # ──────────────────────────────────────────────────────────────
   plan-dev:
-    name: Plan / Dev
+    name: Plan / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
+    needs: detect
     environment: dev
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect.outputs.modules) }}
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -50,27 +88,30 @@ jobs:
           terraform plan \
             -var-file=environments/dev/dev.tfvars \
             -var "release_version=dev-${GITHUB_SHA:0:7}" \
-            -out=dev.tfplan
+            -out=${{ matrix.module }}-dev.tfplan
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dev-tfplan-${{ github.sha }}
-          # Path is relative to workspace root; preserves the terraform/ prefix on download
-          path: terraform/dev.tfplan
+          name: tfplan-${{ matrix.module }}-dev-${{ github.sha }}
+          path: terraform/${{ matrix.module }}/${{ matrix.module }}-dev.tfplan
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Stage 2: Apply DEV — apply exactly the saved plan, nothing else
+  # Stage 2: Apply DEV — apply exactly the saved plan
   # ──────────────────────────────────────────────────────────────
   apply-dev:
-    name: Apply / Dev
+    name: Apply / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
-    needs: plan-dev
+    needs: [detect, plan-dev]
     environment: dev
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect.outputs.modules) }}
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -87,23 +128,23 @@ jobs:
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: dev-tfplan-${{ github.sha }}
-          # upload-artifact v4 strips the leading directory, so the artifact
-          # contains dev.tfplan (not terraform/dev.tfplan). Download directly
-          # into terraform/ so the apply step finds it as dev.tfplan.
-          path: terraform
+          name: tfplan-${{ matrix.module }}-dev-${{ github.sha }}
+          path: terraform/${{ matrix.module }}
 
       - name: Apply
-        run: terraform apply -auto-approve dev.tfplan
+        run: terraform apply -auto-approve ${{ matrix.module }}-dev.tfplan
 
   # ──────────────────────────────────────────────────────────────
-  # Stage 3: Integration Tests — runs after DEV apply succeeds
-  # Replace placeholder steps with your actual test commands
+  # Stage 3: Integration Tests — module-specific health checks
   # ──────────────────────────────────────────────────────────────
   integration-test:
-    name: Integration Test
+    name: Test / Dev / ${{ matrix.module }}
     runs-on: ubuntu-latest
-    needs: apply-dev
+    needs: [detect, apply-dev]
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect.outputs.modules) }}
+      fail-fast: false
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -117,15 +158,23 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Check EC2 instances are running in dev
+      - name: Test EC2 instances (session-01-ec2)
+        if: matrix.module == 'session-01-ec2'
         run: |
-          echo "Checking DEV EC2 instances..."
+          echo "Checking DEV EC2 instances in ASG..."
           aws ec2 describe-instances \
-            --filters "Name=tag:env,Values=dev" "Name=instance-state-name,Values=running" \
+            --filters "Name=tag:env,Values=dev" "Name=tag:session,Values=01-ec2" "Name=instance-state-name,Values=running" \
             --query 'Reservations[*].Instances[*].InstanceId' \
             --output text
           echo "EC2 check passed."
 
-      # TODO: add more integration tests here
-      # e.g. pytest tests/integration/ --env dev
-      # e.g. curl health-check endpoint
+      - name: Test ECS services (session-02-ecs)
+        if: matrix.module == 'session-02-ecs'
+        run: |
+          echo "Checking DEV ECS services..."
+          aws ecs describe-services \
+            --cluster dev-cluster \
+            --services dev-frontend dev-backend \
+            --query 'services[*].{name:serviceName,running:runningCount,desired:desiredCount}' \
+            --output table
+          echo "ECS check passed."

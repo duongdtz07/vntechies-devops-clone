@@ -1,7 +1,8 @@
 name: Terraform Release (Prod)
 
-# Triggered by a signed git tag matching v<major>.<minor>.<patch>.
-# This is the only way to deploy to production — never triggered by a branch push.
+# Triggered by a git tag matching v<major>.<minor>.<patch>.
+# This is the primary path for production deployment.
+# Can also be triggered manually to deploy a specific module.
 #
 # Flow:
 #   git tag v1.2.3 && git push --tags
@@ -9,15 +10,28 @@ name: Terraform Release (Prod)
 #     → apply-prod (waits for manual approval via `prod` GitHub Environment)
 #
 # GitHub Environments required:
-#   prod-plan — no required reviewers; holds prod AWS credentials for planning
-#   prod      — required reviewers set; holds prod AWS credentials for applying
+#   prod — required reviewers set; holds prod AWS credentials
 
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Module to deploy to prod'
+        required: true
+        type: choice
+        options:
+          - all
+          - session-01-ec2
+          - session-02-ecs
+        default: all
+      release_version:
+        description: 'Release version tag (e.g. v1.2.3)'
+        required: true
+        type: string
 
-# Only one release can run at a time
 concurrency:
   group: terraform-release
   cancel-in-progress: false
@@ -28,19 +42,49 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Stage 1: Plan Prod — generate and save the binary plan file
-  # Automatic — no human gate here; the reviewer approves the apply
+  # Detect which modules to release and the version tag
+  # ──────────────────────────────────────────────────────────────
+  detect:
+    name: Detect Modules
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set.outputs.modules }}
+      version: ${{ steps.set.outputs.version }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.release_version }}"
+            if [ "${{ inputs.module }}" != "all" ]; then
+              echo 'modules=["${{ inputs.module }}"]' >> $GITHUB_OUTPUT
+            else
+              echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
+            fi
+          else
+            VERSION="${{ github.ref_name }}"
+            echo 'modules=["session-01-ec2","session-02-ecs"]' >> $GITHUB_OUTPUT
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+  # ──────────────────────────────────────────────────────────────
+  # Stage 1: Plan Prod — automatic, no human gate
   # ──────────────────────────────────────────────────────────────
   plan-prod:
-    name: Plan / Prod
+    name: Plan / Prod / ${{ matrix.module }}
     runs-on: ubuntu-latest
+    needs: detect
     environment: prod
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect.outputs.modules) }}
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -55,35 +99,36 @@ jobs:
         run: |
           terraform plan \
             -var-file=environments/prod/prod.tfvars \
-            -var "release_version=${{ github.ref_name }}" \
-            -out=prod.tfplan
+            -var "release_version=${{ needs.detect.outputs.version }}" \
+            -out=${{ matrix.module }}-prod.tfplan
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: prod-tfplan-${{ github.ref_name }}
-          # Path is relative to workspace root; preserves terraform/ prefix on download
-          path: terraform/prod.tfplan
-          # Keep 7 days so reviewers can inspect before approving
+          name: tfplan-${{ matrix.module }}-prod-${{ needs.detect.outputs.version }}
+          path: terraform/${{ matrix.module }}/${{ matrix.module }}-prod.tfplan
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────────
-  # Stage 2: Apply Prod — apply exactly the saved plan
-  # Pauses here until a required reviewer approves in the GitHub UI.
-  # The reviewer should download and inspect the plan artifact above
-  # before approving.
+  # Stage 2: Apply Prod — pauses for required reviewer approval
+  # Reviewer should inspect the plan artifact before approving.
   # ──────────────────────────────────────────────────────────────
   apply-prod:
-    name: Apply / Prod
+    name: Apply / Prod / ${{ matrix.module }}
     runs-on: ubuntu-latest
-    needs: plan-prod
-    environment: prod   # Required Reviewers gate — set in GitHub Settings → Environments
+    needs: [detect, plan-prod]
+    environment: prod
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect.outputs.modules) }}
+      fail-fast: false
     defaults:
       run:
-        working-directory: terraform
+        working-directory: terraform/${{ matrix.module }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -97,9 +142,8 @@ jobs:
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: prod-tfplan-${{ github.ref_name }}
-          # Extract to workspace root so the file lands at terraform/prod.tfplan
-          path: terraform
-          
+          name: tfplan-${{ matrix.module }}-prod-${{ needs.detect.outputs.version }}
+          path: terraform/${{ matrix.module }}
+
       - name: Apply
-        run: terraform apply -auto-approve prod.tfplan
+        run: terraform apply -auto-approve ${{ matrix.module }}-prod.tfplan
