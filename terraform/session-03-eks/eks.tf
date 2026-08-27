@@ -12,6 +12,12 @@ resource "aws_eks_cluster" "main" {
     endpoint_private_access = true
   }
 
+  # API_AND_CONFIG_MAP enables the modern Access Entry API while keeping
+  # backward compatibility with the legacy aws-auth ConfigMap.
+  access_config {
+    authentication_mode = "API_AND_CONFIG_MAP"
+  }
+
   # Enable control-plane logging — useful for teaching
   enabled_cluster_log_types = ["api", "audit", "authenticator"]
 
@@ -32,7 +38,8 @@ resource "aws_eks_node_group" "main" {
   # Nodes go into private subnets — no direct internet exposure
   subnet_ids = [for s in aws_subnet.private : s.id]
 
-  instance_types = [var.node_instance_type]
+  instance_types = var.node_instance_types
+  capacity_type  = "SPOT"
   # AL2023 is the current-gen EKS-optimised AMI required for Kubernetes 1.30+.
   # AL2 (the implicit default) does not have supported images for 1.30+.
   ami_type = "AL2023_x86_64_STANDARD"
@@ -84,9 +91,44 @@ resource "aws_eks_addon" "kube_proxy" {
 
 # EBS CSI driver — required to provision EBS-backed PersistentVolumes (e.g. MongoDB storage)
 resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "aws-ebs-csi-driver"
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = "aws-ebs-csi-driver"
+  resolve_conflicts_on_create = "OVERWRITE"
 
-  tags       = local.common_tags
-  depends_on = [aws_eks_node_group.main]
+  tags = local.common_tags
+
+  # Must wait for both the node group AND the EBS CSI IAM policy to be attached
+  # before the addon driver can start provisioning volumes.
+  depends_on = [
+    aws_eks_node_group.main,
+    aws_iam_role_policy_attachment.eks_ebs_csi_policy,
+  ]
+}
+
+# ── Cluster Admins (EKS Access Entry API) ────────────────────────────────────
+# Add IAM users/roles to cluster_admin_arns in tfvars to grant kubectl
+# cluster-admin access without touching the aws-auth ConfigMap.
+
+resource "aws_eks_access_entry" "admin" {
+  for_each = toset(var.cluster_admin_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  type          = "STANDARD"
+
+  tags = local.common_tags
+}
+
+resource "aws_eks_access_policy_association" "admin" {
+  for_each = toset(var.cluster_admin_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.admin]
 }
