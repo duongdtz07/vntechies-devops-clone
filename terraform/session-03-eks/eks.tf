@@ -97,11 +97,10 @@ resource "aws_eks_addon" "ebs_csi_driver" {
 
   tags = local.common_tags
 
-  # Must wait for both the node group AND the EBS CSI IAM policy to be attached
-  # before the addon driver can start provisioning volumes.
+  # Pod Identity association must exist before the addon starts so the driver
+  # pod gets credentials immediately on first boot.
   depends_on = [
-    aws_eks_node_group.main,
-    aws_iam_role_policy_attachment.eks_ebs_csi_policy,
+    aws_eks_pod_identity_association.ebs_csi_driver,
   ]
 }
 
