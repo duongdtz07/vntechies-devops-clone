@@ -1,0 +1,5 @@
+
+
+bucket = "duongdt-terraform-state"
+key    = "practice/dev/terraform.tfstate"
+region = "ap-southeast-1"
