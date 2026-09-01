@@ -24,30 +24,7 @@ resource "aws_launch_template" "app" {
     security_groups = [aws_security_group.ec2.id]
   }
 
-  user_data = base64encode(<<-EOF
-        #!/bin/bash
-        yum update -y
-        yum install -y nginx
-        systemctl enable nginx
-        systemctl start nginx
-        # Lấy Token IMDSv2
-        TOKEN=$(curl -s -X PUT "http://[IP_ADDRESS]/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-        INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://[IP_ADDRESS]/latest/meta-data/instance-id)
-        AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://[IP_ADDRESS]/latest/meta-data/placement/availability-zone)
-        cat > /usr/share/nginx/html/index.html <<HTML
-        <!DOCTYPE html>
-        <html>
-        <head><title>${var.env} - VNTechies Demo</title></head>
-        <body style="font-family: Arial; padding: 20px;">
-            <h1 style="color: #0066cc;">VNTechies DevOps - Session 01</h1>
-            <p>Environment: <b>${var.env}</b></p>
-            <p>Serving from Instance: <b style="color: red;">$INSTANCE_ID</b></p>
-            <p>Availability Zone: <b style="color: green;">$AZ</b></p>
-        </body>
-        </html>
-        HTML
-    EOF
-  )
+  user_data = filebase64("${path.module}/user-data.sh")
 
   tag_specifications {
     resource_type = "instance"
@@ -113,60 +90,60 @@ resource "aws_autoscaling_group" "app" {
 
 //  Auto Scaling Policy: chính sách tự động tăng giảm số lượng máy ảo
 //  - scale_out: tăng số lượng máy ảo khi CPU > 70%
-resource "aws_autoscaling_policy" "scale_out" {
-  name                   = "${var.env}-app-scale-out"     // tên chính sách
-  autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
-  adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
-  scaling_adjustment     = 1                              // tăng 1 máy ảo
-  cooldown               = 300                            // thời gian chờ sau khi scale out trước khi scale out tiếp
-}
+# resource "aws_autoscaling_policy" "scale_out" {
+#   name                   = "${var.env}-app-scale-out"     // tên chính sách
+#   autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
+#   adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
+#   scaling_adjustment     = 1                              // tăng 1 máy ảo
+#   cooldown               = 300                            // thời gian chờ sau khi scale out trước khi scale out tiếp
+# }
 
-// Auto Scaling Policy: chính sách tự động tăng giảm số lượng máy ảo
-//  - scale_in: giảm số lượng máy ảo khi CPU < 20%
-resource "aws_autoscaling_policy" "scale_in" {
-  name                   = "${var.env}-app-scale-in"      // tên chính sách
-  autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
-  adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
-  scaling_adjustment     = -1                             // giảm 1 máy ảo
-  cooldown               = 300                            // thời gian chờ sau khi scale in trước khi scale in tiếp
-}
+# // Auto Scaling Policy: chính sách tự động tăng giảm số lượng máy ảo
+# //  - scale_in: giảm số lượng máy ảo khi CPU < 20%
+# resource "aws_autoscaling_policy" "scale_in" {
+#   name                   = "${var.env}-app-scale-in"      // tên chính sách
+#   autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
+#   adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
+#   scaling_adjustment     = -1                             // giảm 1 máy ảo
+#   cooldown               = 300                            // thời gian chờ sau khi scale in trước khi scale in tiếp
+# }
 
 // CloudWatch Alarm: báo động khi CPU > 40%
-resource "aws_cloudwatch_metric_alarm" "high_cpu" {
-  alarm_name          = "${var.env}-app-high-cpu"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/EC2"
-  period              = 120
-  statistic           = "Average"
-  threshold           = 70
-  alarm_description   = "Scale out when CPU > 40% for 4 minutes"
-  alarm_actions       = [aws_autoscaling_policy.scale_out.arn]
+# resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+#   alarm_name          = "${var.env}-app-high-cpu"
+#   comparison_operator = "GreaterThanThreshold"
+#   evaluation_periods  = 2
+#   metric_name         = "CPUUtilization"
+#   namespace           = "AWS/EC2"
+#   period              = 120
+#   statistic           = "Average"
+#   threshold           = 70
+#   alarm_description   = "Scale out when CPU > 40% for 4 minutes"
+#   alarm_actions       = [aws_autoscaling_policy.scale_out.arn]
 
-  dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.app.name
-  }
+#   dimensions = {
+#     AutoScalingGroupName = aws_autoscaling_group.app.name
+#   }
 
-  tags = local.common_tags
-}
+#   tags = local.common_tags
+# }
 
-// CloudWatch Alarm: báo động khi CPU < 20%
-resource "aws_cloudwatch_metric_alarm" "low_cpu" {
-  alarm_name          = "${var.env}-app-low-cpu"
-  comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "CPUUtilization"
-  namespace           = "AWS/EC2"
-  period              = 120
-  statistic           = "Average"
-  threshold           = 20
-  alarm_description   = "Scale in when CPU < 20% for 4 minutes"
-  alarm_actions       = [aws_autoscaling_policy.scale_in.arn]
+# // CloudWatch Alarm: báo động khi CPU < 20%
+# resource "aws_cloudwatch_metric_alarm" "low_cpu" {
+#   alarm_name          = "${var.env}-app-low-cpu"
+#   comparison_operator = "LessThanThreshold"
+#   evaluation_periods  = 2
+#   metric_name         = "CPUUtilization"
+#   namespace           = "AWS/EC2"
+#   period              = 120
+#   statistic           = "Average"
+#   threshold           = 20
+#   alarm_description   = "Scale in when CPU < 20% for 4 minutes"
+#   alarm_actions       = [aws_autoscaling_policy.scale_in.arn]
 
-  dimensions = {
-    AutoScalingGroupName = aws_autoscaling_group.app.name
-  }
+#   dimensions = {
+#     AutoScalingGroupName = aws_autoscaling_group.app.name
+#   }
 
-  tags = local.common_tags
-}
+#   tags = local.common_tags
+# }
