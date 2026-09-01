@@ -17,19 +17,19 @@ variable "instance_type" {
 
 variable "min_size" {
   type        = number
-  default     = 2
+  default     = 1
   description = "Minimum number of EC2 instances in the ASG."
 }
 
 variable "max_size" {
   type        = number
-  default     = 3
+  default     = 2
   description = "Maximum number of EC2 instances in the ASG."
 }
 
 variable "desired_capacity" {
   type        = number
-  default     = 2
+  default     = 1
   description = "Desired number of EC2 instances in the ASG."
 }
 
