@@ -88,27 +88,23 @@ resource "aws_autoscaling_group" "app" {
   depends_on = [aws_lb_listener.http] // đảm bảo ASG được tạo sau khi Load Balancer Listener được tạo
 }
 
-//  Auto Scaling Policy: chính sách tự động tăng giảm số lượng máy ảo
-//  - scale_out: tăng số lượng máy ảo khi CPU > 70%
+//  Auto Scaling Policy & CloudWatch Alarm (đã tắt scale tự động)
 # resource "aws_autoscaling_policy" "scale_out" {
-#   name                   = "${var.env}-app-scale-out"     // tên chính sách
-#   autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
-#   adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
-#   scaling_adjustment     = 1                              // tăng 1 máy ảo
-#   cooldown               = 300                            // thời gian chờ sau khi scale out trước khi scale out tiếp
+#   name                   = "${var.env}-app-scale-out"
+#   autoscaling_group_name = aws_autoscaling_group.app.name
+#   adjustment_type        = "ChangeInCapacity"
+#   scaling_adjustment     = 1
+#   cooldown               = 300
 # }
 
-# // Auto Scaling Policy: chính sách tự động tăng giảm số lượng máy ảo
-# //  - scale_in: giảm số lượng máy ảo khi CPU < 20%
 # resource "aws_autoscaling_policy" "scale_in" {
-#   name                   = "${var.env}-app-scale-in"      // tên chính sách
-#   autoscaling_group_name = aws_autoscaling_group.app.name // tên ASG
-#   adjustment_type        = "ChangeInCapacity"             // ChangeInCapacity: tăng giảm số lượng máy ảo, PercentChangeInCapacity: tăng giảm theo phần trăm
-#   scaling_adjustment     = -1                             // giảm 1 máy ảo
-#   cooldown               = 300                            // thời gian chờ sau khi scale in trước khi scale in tiếp
+#   name                   = "${var.env}-app-scale-in"
+#   autoscaling_group_name = aws_autoscaling_group.app.name
+#   adjustment_type        = "ChangeInCapacity"
+#   scaling_adjustment     = -1
+#   cooldown               = 300
 # }
 
-// CloudWatch Alarm: báo động khi CPU > 40%
 # resource "aws_cloudwatch_metric_alarm" "high_cpu" {
 #   alarm_name          = "${var.env}-app-high-cpu"
 #   comparison_operator = "GreaterThanThreshold"
@@ -118,7 +114,7 @@ resource "aws_autoscaling_group" "app" {
 #   period              = 120
 #   statistic           = "Average"
 #   threshold           = 70
-#   alarm_description   = "Scale out when CPU > 40% for 4 minutes"
+#   alarm_description   = "Scale out when CPU > 70% for 4 minutes"
 #   alarm_actions       = [aws_autoscaling_policy.scale_out.arn]
 
 #   dimensions = {
@@ -128,7 +124,6 @@ resource "aws_autoscaling_group" "app" {
 #   tags = local.common_tags
 # }
 
-# // CloudWatch Alarm: báo động khi CPU < 20%
 # resource "aws_cloudwatch_metric_alarm" "low_cpu" {
 #   alarm_name          = "${var.env}-app-low-cpu"
 #   comparison_operator = "LessThanThreshold"

@@ -3,7 +3,12 @@ set -e
 
 # Cập nhật hệ thống và cài đặt công cụ cần thiết
 dnf update -y
-dnf install -y git nginx nodejs npm
+# dnf install -y git nginx nodejs npm  # Ghi chú: Lệnh mặc định này cài Node.js 18, không tương thích với Next.js (yêu cầu Node.js >= 20.9.0)
+dnf install -y git nginx
+
+# Cài đặt Node.js 20 LTS (Next.js yêu cầu Node.js >= 20.9.0)
+curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+dnf install -y nodejs
 
 # Cấu hình Swap 2GB (tránh OOM khi npm install / build trên t3.micro)
 if [ ! -f /swapfile ]; then
@@ -86,3 +91,25 @@ NGINX
 
 systemctl enable nginx
 systemctl restart nginx
+
+# ==============================================================================
+# NOTE / POST-MORTEM VỀ LỖI UNHEALTHY & VÒNG LẶP XOÁ/TẠO EC2 TRƯỚC ĐÓ:
+# ==============================================================================
+# 1. Hiện tượng:
+#    - EC2 sau khi khởi tạo được khoảng 5 phút thì bị Auto Scaling Group xoá đi
+#      và tạo lại con mới liên tục (flapping/recreation loop).
+#
+# 2. Nguyên nhân gốc rễ (Root Cause):
+#    - Lệnh mặc định `dnf install -y nodejs` trên Amazon Linux 2023 cài Node.js 18.20.8.
+#    - Source code Next.js trong repo test-aws yêu cầu Node.js >= 20.9.0.
+#    - Khi chạy đến `npm run build`, Next.js báo lỗi không tương thích phiên bản
+#      và trả về exit code 1.
+#    - Do có `set -e` ở đầu file, script bị dừng ngay lập tức, các lệnh bên dưới
+#      (chạy Next.js service và khởi động Nginx) không bao giờ được thực thi.
+#    - Port 80 không có dịch vụ lắng nghe -> ALB Health Check thất bại (Unhealthy).
+#    - ASG có `health_check_type = "ELB"` thấy instance Unhealthy sau grace period (300s)
+#      liền tự động huỷ và tạo lại máy mới.
+#
+# 3. Cách khắc phục:
+#    - Cài đặt Node.js 20 LTS từ kho NodeSource (`rpm.nodesource.com/setup_20.x`).
+# ==============================================================================
