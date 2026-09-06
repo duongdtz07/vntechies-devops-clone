@@ -105,6 +105,7 @@ resource "aws_autoscaling_policy" "scale_in" {
   cooldown               = 300
 }
 
+// scale out khi CPU trên 70% trong 4 phút
 resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   alarm_name          = "${var.env}-app-high-cpu"
   comparison_operator = "GreaterThanThreshold"

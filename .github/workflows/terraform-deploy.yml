@@ -18,11 +18,11 @@ on:
         required: true
         type: choice
         options:
-          - session-01-ec2
-          - session-02-ecs
-          - session-03-eks
-          - session-04-argocd
-        default: session-01-ec2
+          - ec2-lesson
+          - ecs-lesson
+          - eks-lesson
+          - argocd-lesson
+        default: ec2-lesson
 
 concurrency:
   group: terraform-deploy
