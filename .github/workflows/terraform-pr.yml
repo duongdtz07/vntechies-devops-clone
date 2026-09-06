@@ -12,10 +12,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "terraform/session-01-ec2/**"
-      - "terraform/session-02-ecs/**"
-      - "terraform/session-03-eks/**"
-      - "terraform/session-04-argocd/**"
+      - "pratice_duongdt/terraform/**"
+      - "terraform/**"
       - ".github/workflows/terraform-*.yml"
 
 permissions:
